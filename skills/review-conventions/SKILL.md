@@ -23,7 +23,7 @@ This is a **read-only** review. Do not modify files, run formatters that write f
    - **Code:** bypassing an existing helper/wrapper, using a different state-management or error-handling idiom, naming/type/import conventions, or inconsistent file placement.
    - **Tests:** inconsistent fixture/setup, naming, structure, locator, or assertion style; changes to existing E2E selectors or assertions that broaden their target without an explained need.
    - **Change scope:** introducing a second way to do the same thing, or unrelated stylistic rewrites within the diff.
-5. **Challenge apparent mismatches.** Check whether a documented migration, deliberate exception, or genuinely different requirement explains the choice. When examples conflict, report the uncertainty rather than inventing a uniform rule.
+5. **Challenge apparent mismatches.** Before reporting a mismatch, establish the changed code’s actual responsibility and intent from its implementation, callers, and tests. Do not apply a convention solely because related terminology or APIs appear. Determine whether the cited convention governs the behavior being tested, the implementation mechanism, or the test’s location, and explain why it applies to this change. Check whether a documented migration, deliberate exception, or genuinely different requirement explains the choice. When examples conflict, report the uncertainty rather than inventing a uniform rule.
 
 ## Reporting threshold
 
