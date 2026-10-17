@@ -17,7 +17,7 @@ This is a **read-only** review. Do not modify files, run formatters that write f
    - **Same context first:** adjacent code, sibling files, the containing UI area (e.g. toolbar, header, dialog), the same package/module, or neighboring tests — even if they implement a different feature.
    - **Same behavior next:** other implementations of equivalent UI controls, operations, helpers, or tests.
    - **Broader direction last:** repository-wide patterns and documented migrations when local practice is unclear.
-   Compare multiple representative examples where practical. A directly comparable local example may matter more than a larger number of unrelated examples.
+   Compare multiple representative examples where practical. Prioritize precedents from the same UI region, module, or architectural boundary over functionally similar implementations elsewhere. Treat an implementation in a different context as a counterexample only when the same convention applies to both contexts.
 4. **Look deliberately for convention mismatches:**
    - **UI:** mixing component systems within an established area; choosing a different control, composition, styling, prop, or event pattern from neighboring UI.
    - **Code:** bypassing an existing helper/wrapper, using a different state-management or error-handling idiom, naming/type/import conventions, or inconsistent file placement.
@@ -28,6 +28,8 @@ This is a **read-only** review. Do not modify files, run formatters that write f
 ## Reporting threshold
 
 Be **aggressive about finding candidates**, not about declaring rules. Report minor and potentially debatable departures when there is a specific precedent or documented policy to compare against. Do **not** require proof of a runtime defect, high severity, or multiple identical examples.
+
+Report strongly supported inferred conventions even when they are not explicitly documented; label them as inferred and cite the supporting evidence.
 
 - **Clear mismatch:** directly applicable guidance or strong local precedent.
 - **Possible mismatch:** concrete but limited/conflicting precedent; worth human review. Explicitly identify the uncertainty.
