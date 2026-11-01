@@ -70,6 +70,32 @@ def collect_refs(repo: Path, all_refs: bool, refs: list[str]) -> dict[str, set[s
         objs.setdefault(sha, set())
         if path:
             objs[sha].add(path)
+    # rev-list --objects emits at most one name for each object. Recover all
+    # historical blob paths from commit diffs, including roots and merges.
+    # This must complete before examining any blob content: a blob may also
+    # have been committed as .env even when rev-list names it as a.txt.
+    history = git(repo, "log", "--raw", "-m", "--no-renames", "--no-abbrev",
+                  "--root", "--format=", "-z", *( ["--all"] if all_refs else roots))
+    fields = history.split(b"\0")
+    index = 0
+    while index < len(fields):
+        metadata = fields[index].lstrip(b"\n")
+        index += 1
+        if not metadata:
+            continue
+        parts = metadata.split()
+        if len(parts) != 5 or not parts[0].startswith(b":"):
+            raise RuntimeError("cannot parse git log raw-diff metadata")
+        if index >= len(fields):
+            raise RuntimeError("missing path in git log raw-diff output")
+        path = fields[index].decode("utf-8", "replace")
+        index += 1
+        if parts[1] == b"160000":
+            # Git submodule: not a blob stored in this repository.
+            continue
+        sha = parts[3].decode("ascii")
+        if sha in objs and parts[1] != b"000000":
+            objs[sha].add(path)
     return objs
 
 
@@ -101,14 +127,15 @@ def blob_metadata(repo: Path, ids: list[str]) -> list[tuple[str, int]]:
 
 
 def scan(repo: Path, objs: dict[str, set[str]], unreachable: set[str],
-         max_bytes: int, max_findings: int) -> dict:
+         max_bytes: int, max_findings: int, max_unscanned: int) -> dict:
     # Scan each identical blob only once. Multiple historical paths are retained.
     ids = sorted(set(objs) | unreachable)
     blobs = blob_metadata(repo, ids)
     findings = []
+    unscanned = []
     stats = {"blobs": len(blobs), "sensitive_files_not_read": 0,
-             "oversized_not_read": 0, "binary_not_scanned": 0,
-             "content_scanned": 0, "total_findings": 0}
+             "oversized_not_read": 0, "content_scanned": 0,
+             "total_findings": 0, "total_unscanned": 0}
     env = os.environ.copy()
     env["GIT_OPTIONAL_LOCKS"] = "0"
     proc = subprocess.Popen(["git", "-C", str(repo), "cat-file", "--batch"],
@@ -122,10 +149,18 @@ def scan(repo: Path, objs: dict[str, set[str]], unreachable: set[str],
             path_names = paths or ["<path unavailable>"]
             if any(sensitive_path(p) for p in paths):
                 stats["sensitive_files_not_read"] += 1
-                kinds = ["sensitive_filename_content_not_read"]
+                reason = "sensitive_filename_content_not_read"
             elif size > max_bytes:
                 stats["oversized_not_read"] += 1
-                kinds = ["oversized_blob_not_read"]
+                reason = "oversized_blob_not_read"
+            else:
+                reason = None
+            if reason is not None:
+                stats["total_unscanned"] += 1
+                if len(unscanned) < max_unscanned:
+                    unscanned.append({"object": sha, "paths": path_names,
+                                      "scope": scope, "reason": reason})
+                continue
             else:
                 proc.stdin.write((sha + "\n").encode("ascii"))
                 proc.stdin.flush()
@@ -136,11 +171,16 @@ def scan(repo: Path, objs: dict[str, set[str]], unreachable: set[str],
                 newline = proc.stdout.read(1)
                 if len(data) != size or newline != b"\n":
                     raise RuntimeError("truncated git cat-file response")
-                if b"\x00" in data:
-                    stats["binary_not_scanned"] += 1
-                    continue
                 stats["content_scanned"] += 1
-                kinds = [name for name, regex in SIGNATURES.items() if regex.search(data)]
+                # Scan raw bytes, including binary data. For NUL-containing
+                # text, also scan UTF-16LE and UTF-16BE representations, with
+                # or without BOM. Matches are leads requiring manual review.
+                candidates = [data]
+                if b"\x00" in data:
+                    for encoding in ("utf-16-le", "utf-16-be"):
+                        candidates.append(data.decode(encoding, errors="ignore").encode("utf-8"))
+                kinds = [name for name, regex in SIGNATURES.items()
+                         if any(regex.search(candidate) for candidate in candidates)]
             if kinds:
                 stats["total_findings"] += 1
                 if len(findings) < max_findings:
@@ -152,18 +192,21 @@ def scan(repo: Path, objs: dict[str, set[str]], unreachable: set[str],
         proc.wait()
     if proc.returncode:
         raise RuntimeError("git cat-file batch processing failed")
-    return {"status": "completed_with_limits" if (
-                stats["oversized_not_read"] or stats["binary_not_scanned"]
-                or stats["sensitive_files_not_read"] or stats["total_findings"] > len(findings))
-            else "completed",
+    findings_truncated = stats["total_findings"] > len(findings)
+    unscanned_truncated = stats["total_unscanned"] > len(unscanned)
+    return {"status": "completed_with_limits" if (stats["total_unscanned"]
+                or findings_truncated or unscanned_truncated) else "completed",
             "statistics": stats,
-            "findings_truncated": stats["total_findings"] > len(findings),
+            "findings_truncated": findings_truncated,
             "findings": findings,
+            "unscanned_truncated": unscanned_truncated,
+            "unscanned": unscanned,
             "caveats": ["Signature matches are leads, not proof of leaked credentials.",
                         "Sensitive-named files are identified but their contents are not read.",
                         "Working tree, index-only changes, remote GitHub data, and LFS objects are not scanned.",
                         "Reflog-only and unreachable blobs are local unless separately published.",
-                        "Reported paths may not list every historical name for a blob."]}
+                        "Reachable blob paths are collected from historical raw diffs.",
+                        "Unreachable blobs have no known path association."]}
 
 
 def main() -> int:
@@ -175,14 +218,16 @@ def main() -> int:
     parser.add_argument("--unreachable", action="store_true", help="Also scan locally unreachable blobs")
     parser.add_argument("--max-bytes", type=int, default=2_000_000)
     parser.add_argument("--max-findings", type=int, default=200)
+    parser.add_argument("--max-unscanned", type=int, default=200)
     args = parser.parse_args()
-    if args.max_bytes < 1 or args.max_findings < 1:
-        parser.error("--max-bytes and --max-findings must be positive")
+    if args.max_bytes < 1 or args.max_findings < 1 or args.max_unscanned < 1:
+        parser.error("--max-bytes, --max-findings and --max-unscanned must be positive")
     try:
         git(args.repo, "rev-parse", "--git-dir")
         objects = collect_refs(args.repo, args.all, args.ref or [])
         unreachable = collect_unreachable(args.repo) if args.unreachable else set()
-        result = scan(args.repo, objects, unreachable, args.max_bytes, args.max_findings)
+        result = scan(args.repo, objects, unreachable, args.max_bytes,
+                      args.max_findings, args.max_unscanned)
         result["scope"] = {"refs": "all_local_refs" if args.all else args.ref,
                            "include_local_unreachable": args.unreachable}
         print(json.dumps(result, ensure_ascii=False, indent=2))

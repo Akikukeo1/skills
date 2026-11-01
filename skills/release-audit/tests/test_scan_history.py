@@ -51,7 +51,65 @@ class HistoryScannerTests(unittest.TestCase):
         report, output = self.run_scan("--all")
         self.assertNotIn(marker, output)
         self.assertEqual(report["statistics"]["sensitive_files_not_read"], 1)
-        self.assertIn("sensitive_filename_content_not_read", str(report["findings"]))
+        self.assertEqual(report["statistics"]["total_findings"], 0)
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(report["unscanned"][0]["reason"], "sensitive_filename_content_not_read")
+
+    def test_identical_blob_under_sensitive_and_ordinary_paths_is_not_read(self):
+        marker = "ghp_" + "Z" * 36
+        (self.repo / "a.txt").write_text(marker)
+        (self.repo / "z").mkdir()
+        (self.repo / "z" / ".env").write_text(marker)
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "initial")
+        report, output = self.run_scan("--ref", "HEAD")
+        self.assertNotIn(marker, output)
+        self.assertEqual(report["statistics"]["content_scanned"], 0)
+        self.assertEqual(report["statistics"]["sensitive_files_not_read"], 1)
+        self.assertEqual(report["statistics"]["total_findings"], 0)
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(report["unscanned"][0]["paths"], ["a.txt", "z/.env"])
+
+    def test_utf16_bomless_and_bom_secrets_are_scanned(self):
+        values = [
+            ("little.txt", "utf-16-le", b""),
+            ("big.txt", "utf-16-be", b""),
+            ("bom.txt", "utf-16-le", b"\xff\xfe"),
+        ]
+        tokens = []
+        for i, (name, encoding, prefix) in enumerate(values):
+            token = "ghp_" + chr(65 + i) * 36
+            tokens.append(token)
+            (self.repo / name).write_bytes(prefix + ("key=" + token).encode(encoding))
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "initial")
+        report, output = self.run_scan("--all")
+        self.assertEqual(report["statistics"]["content_scanned"], 3)
+        self.assertEqual(report["statistics"]["total_findings"], 3)
+        self.assertEqual(len(report["findings"]), 3)
+        for token in tokens:
+            self.assertNotIn(token, output)
+        self.assertTrue(all("github_token" in item["categories"] for item in report["findings"]))
+
+    def test_unscanned_entries_do_not_exhaust_findings_cap(self):
+        (self.repo / ".env").write_text("not examined")
+        (self.repo / "long.txt").write_text("x" * 200)
+        token = "ghp_" + "F" * 36
+        (self.repo / "ordinary.txt").write_text(token)
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "initial")
+        report, output = self.run_scan("--ref", "HEAD", "--max-bytes", "100",
+                                       "--max-findings", "1", "--max-unscanned", "1")
+        self.assertNotIn(token, output)
+        self.assertEqual(report["statistics"]["total_findings"], 1)
+        self.assertEqual(report["statistics"]["total_unscanned"], 2)
+        self.assertEqual(report["statistics"]["sensitive_files_not_read"], 1)
+        self.assertEqual(report["statistics"]["oversized_not_read"], 1)
+        self.assertEqual(len(report["findings"]), 1)
+        self.assertIn("github_token", report["findings"][0]["categories"])
+        self.assertFalse(report["findings_truncated"])
+        self.assertEqual(len(report["unscanned"]), 1)
+        self.assertTrue(report["unscanned_truncated"])
 
     def test_scan_does_not_change_repository_state(self):
         (self.repo / "a.txt").write_text("normal")
