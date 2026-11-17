@@ -34,7 +34,7 @@ Report strongly supported inferred conventions even when they are not explicitly
 - **Clear mismatch:** directly applicable guidance or strong local precedent.
 - **Possible mismatch:** concrete but limited/conflicting precedent; worth human review. Explicitly identify the uncertainty.
 
-Do not invent conventions, cite unrelated code as evidence, or turn one incidental example into a universal rule. Skip pure formatter/linter trivia, preferences with no repository evidence, pre-existing issues outside the change, and generic correctness/security/performance bugs handled by `$review-agent`. Do not demand broad refactors to enforce uniformity.
+Do not invent conventions, cite unrelated code as evidence, or turn one incidental example into a universal rule. Skip pure formatter/linter trivia, preferences with no repository evidence, and pre-existing issues outside the change. Generic correctness and security bugs belong to defect- or security-focused review (for example, `$deep-review`, `$review-defects`, or `$security-audit`), not convention findings. Do not demand broad refactors to enforce uniformity.
 
 **Example:** When a toggle is added to a toolbar, inspect *other controls in that toolbar* as well as toggles elsewhere. In a Quasar-based toolbar, using a different component system may merit a finding even if it functions correctly. This is a method for finding local conventions, not a blanket rule requiring Quasar.
 
